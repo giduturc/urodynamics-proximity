@@ -135,6 +135,13 @@ x[, st1 := st1 %>%
 
 cat("=== Coalescing by location ===\n")
 x[, address := collapse_address(st1, city, state_abrvtn, zip5)]
+
+###Convert tot_benes, tot_srvcs, and avg_mdcr_pymt_amt to numeric class type
+x$tot_benes <- as.numeric(x$tot_benes)
+x$tot_srvcs <- as.numeric(x$tot_srvcs)
+x$avg_mdcr_pymt_amt <- str_remove_all(x$avg_mdcr_pymt_amt, "[$]") ###removes dollar sign
+x$avg_mdcr_pymt_amt <- as.numeric(x$avg_mdcr_pymt_amt)
+
 locs <- x[, .(tot_benes = sum(tot_benes),
       tot_srvcs = sum(tot_srvcs),
       avg_mdcr_pymt_amt = mean(avg_mdcr_pymt_amt),
@@ -329,6 +336,7 @@ ct_data <- ct_data %>% rename(pop = estimate)
 ct_data[, state := fifelse(NAME %>% str_detect(";"),
                            word(NAME, -1, sep = "; "),
                            word(NAME, -1, sep = ", "))]
+gdata$GEOID = str_remove(gdata$GEOID, "^0+") ### removes leading 0's from gdata$GEOID
 gdata <- merge(gdata, ct_data, by = "GEOID")
 rm(ct_data)
 gdata <- gdata %>% mutate(pop = pop %>% as.numeric)
@@ -380,7 +388,7 @@ cat("Total unique urodynamics testing centers:", locs[, uniqueN(address)], "\n")
 
 gdata_dt <- gdata %>% select(pop, state, dist) %>% data.table
 cat("\nWeighted median distance for women (25th/50th/75th percentile):\n")
-print(gdata_dt[, wtd.quantile(dist, pop, probs = c(0.25, 0.5, 0.75)) %>% round(1)])
+print(gdata_dt[, wtd.quantile(dist, pop, probs = c(0.25, 0.5, 0.75, 1)) %>% round(1)])
 
 cat("\nWomen >100 miles from urodynamics center:")
 cat("\n  Millions:", round(gdata_dt[dist > 100, pop %>% sum]/1000000, 1))
@@ -392,5 +400,13 @@ print(gdata_dt[, .(mdist = wtd.quantile(dist, pop, probs = 0.5) %>% round(0)), b
 cat("\nMetro areas with urodynamics:\n")
 print(metro)
 cat("Percent:", round(100*metro[1]/sum(metro[1:2]), 1), "%\n")
+
+ggplot(gdata_dt, aes(x=1, y=dist, weight=pop))+
+    geom_boxplot(outliers=FALSE)+
+   labs(x = "United States Population", y = "Median Weighted Distance (miles)")+
+  ggtitle("Median Weighted Distance") + 
+  theme(axis.ticks.x = element_blank(),
+        axis.text.x = element_blank())
+   
 
 cat("\n=== ANALYSIS COMPLETE ===\n")
