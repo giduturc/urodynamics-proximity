@@ -22,7 +22,7 @@ use_cached_geocodes <- !tolower(Sys.getenv("URODYNAMICS_REFRESH_GEOCODES", "fals
 female_population_var <- "B01001_026"
 female_population_year <- 2023
 miles_per_meter <- 0.000621371
-distance_breaks_miles <- c(0, 5, 10, 25, 50, 100, 200, 500, 1000, 100000)
+distance_breaks_miles <- c(0, 5, 10, 25, 50, 100, 200, 500, Inf)
 
 packs <- c("dplyr", "data.table", "janitor", "stringr", "Hmisc",
            "tidygeocoder", "tidycensus", "ggplot2", "ggpubr", "ggthemes",
@@ -135,6 +135,13 @@ x[, st1 := st1 %>%
 
 cat("=== Coalescing by location ===\n")
 x[, address := collapse_address(st1, city, state_abrvtn, zip5)]
+
+###Convert tot_benes, tot_srvcs, and avg_mdcr_pymt_amt to numeric class type
+x$tot_benes <- as.numeric(x$tot_benes)
+x$tot_srvcs <- as.numeric(x$tot_srvcs)
+x$avg_mdcr_pymt_amt <- str_remove_all(x$avg_mdcr_pymt_amt, "[$]") ###removes dollar sign
+x$avg_mdcr_pymt_amt <- as.numeric(x$avg_mdcr_pymt_amt)
+
 locs <- x[, .(tot_benes = sum(tot_benes),
       tot_srvcs = sum(tot_srvcs),
       avg_mdcr_pymt_amt = mean(avg_mdcr_pymt_amt),
@@ -329,21 +336,44 @@ ct_data <- ct_data %>% rename(pop = estimate)
 ct_data[, state := fifelse(NAME %>% str_detect(";"),
                            word(NAME, -1, sep = "; "),
                            word(NAME, -1, sep = ", "))]
+gdata$GEOID = str_remove(gdata$GEOID, "^0+") ### removes leading 0's from gdata$GEOID
 gdata <- merge(gdata, ct_data, by = "GEOID")
 rm(ct_data)
 gdata <- gdata %>% mutate(pop = pop %>% as.numeric)
 
 cat("\n=== Generating Figure 1B (distance map) ===\n")
-make_dist_plot <- function(data, show_legend = TRUE) {
-  p <- ggplot(data = data,
-       aes(fill = cut(dist, distance_breaks_miles),
-            color = after_scale(fill))) +
+
+
+library(cowplot)
+
+gdata <- gdata %>%
+  mutate(dist_cut = cut(dist, distance_breaks_miles,
+                        labels = c("Less than 5", "5 to 10", "10 to 25",
+                                   "25 to 50", "50 to 100", "100 to 200",
+                                   "200 to 500", "500 or greater"),
+                        include.lowest = TRUE))
+
+make_dist_plot <- function(gdata, show_legend = TRUE) {
+  gdata$dist_cut <- factor(gdata$dist_cut, levels = c("Less than 5", "5 to 10", "10 to 25",
+                                                      "25 to 50", "50 to 100", "100 to 200",
+                                                      "200 to 500", "500 or greater"))
+  p <- ggplot(data = gdata, aes(fill = dist_cut)) +
     geom_sf(color = NA, linewidth = 0) +
-    scale_fill_brewer(palette = "RdYlBu", direction = -1,
-                      name = "Distance (miles)",
-                      labels = c("Less than 5", "5 to 10", "10 to 25",
-                                 "25 to 50", "50 to 100", "100 to 200",
-                                 "200 to 500", "500 or greater")) +
+    scale_fill_manual(
+      values = c(
+        "Less than 5"    = "#4575B4",
+        "5 to 10"        = "#74ADD1",
+        "10 to 25"       = "#ABD9E9",
+        "25 to 50"       = "#E0F3F8",
+        "50 to 100"      = "#FEE090",
+        "100 to 200"     = "#FDAE61",
+        "200 to 500"     = "#F46D43",
+        "500 or greater" = "#D73027"
+      ),
+      name = "Distance (miles)",
+      na.value = "grey80",
+      drop = FALSE
+    ) +
     theme(legend.text = element_text(size = 18, face = "bold"),
           legend.title = element_text(size = 16, face = "bold"),
           legend.background = element_blank(),
@@ -358,29 +388,40 @@ make_dist_plot <- function(data, show_legend = TRUE) {
   p
 }
 
-f1b <- make_dist_plot(gdata %>% filter(state %nin% c("Hawaii", "Alaska", "Puerto Rico"))) +
-  theme(legend.position = c(0.9, 0.25)) + ggtitle(waiver())
+# Build legend from full gdata so all 8 buckets are represented
+legend_plot <- make_dist_plot(gdata, show_legend = TRUE) +
+  theme(legend.position = c(0.5, 0.5))
+legend_only <- get_legend(legend_plot)
 
+# Build main plots without legend
+f1b <- make_dist_plot(gdata %>% filter(state %nin% c("Hawaii", "Alaska", "Puerto Rico")),
+                      show_legend = FALSE) +
+  ggtitle(waiver())
 pr <- make_dist_plot(gdata %>% filter(state == "Puerto Rico"), FALSE) +
-  coord_sf(xlim = c(-68.5, -64.5), ylim = c(17.8, 18.8))
+  coord_sf(xlim = c(-67.5, -65), ylim = c(17.9, 18.6), clip = "on")
 hw <- make_dist_plot(gdata %>% filter(state == "Hawaii"), FALSE) +
-  coord_sf(xlim = c(-180, -150), ylim = c(18, 30))
+  coord_sf(xlim = c(-160, -154), ylim = c(18.5, 22.5), clip = "on")
 ak <- make_dist_plot(gdata %>% filter(state == "Alaska"), FALSE) +
-  coord_sf(xlim = c(-180, -130), ylim = c(51, 72))
+  coord_sf(xlim = c(-180, -130), ylim = c(51, 72), clip = "on")
 
 f1b <- f1b +
   inset_element(ak, left = 0, right = 0.3, top = 0.3, bottom = 0) +
   inset_element(hw, left = 0.2, right = 0.4, top = 0.3, bottom = 0) +
   inset_element(pr, left = 0.75, right = 0.85, top = 0.1, bottom = 0)
-ggsave(filename = "Figure 1B.png", dpi = 1000, width = 16, height = 9)
+
+# Combine map and legend
+f1b_final <- plot_grid(f1b, legend_only, rel_widths = c(1, 0.2))
+
+ggsave(filename = "Figure 1B.png", plot = f1b_final, dpi = 1000, width = 16, height = 9, bg = "white")
 cat("Figure 1B saved.\n")
+
 
 cat("\n=== Summary Statistics ===\n")
 cat("Total unique urodynamics testing centers:", locs[, uniqueN(address)], "\n")
 
 gdata_dt <- gdata %>% select(pop, state, dist) %>% data.table
 cat("\nWeighted median distance for women (25th/50th/75th percentile):\n")
-print(gdata_dt[, wtd.quantile(dist, pop, probs = c(0.25, 0.5, 0.75)) %>% round(1)])
+print(gdata_dt[, wtd.quantile(dist, pop, probs = c(0.25, 0.5, 0.75, 1)) %>% round(1)])
 
 cat("\nWomen >100 miles from urodynamics center:")
 cat("\n  Millions:", round(gdata_dt[dist > 100, pop %>% sum]/1000000, 1))
@@ -392,5 +433,15 @@ print(gdata_dt[, .(mdist = wtd.quantile(dist, pop, probs = 0.5) %>% round(0)), b
 cat("\nMetro areas with urodynamics:\n")
 print(metro)
 cat("Percent:", round(100*metro[1]/sum(metro[1:2]), 1), "%\n")
+
+ggplot(gdata_dt, aes(x=1, y=dist, weight=pop))+
+    geom_boxplot(outliers=FALSE)+
+  coord_flip()+
+   labs(x = "United States Population", y = "Median Weighted Distance (miles)")+
+  ggtitle("Median Weighted Distance") + 
+  theme(axis.ticks.x = element_blank(),
+        axis.text.x = element_blank(),
+        panel.background = element_rect(fill = 'white') )
+   
 
 cat("\n=== ANALYSIS COMPLETE ===\n")
